@@ -188,6 +188,82 @@ def test_add_remove_content(
     assert latest_version.content_summary.removed == {}
 
 
+@pytest.fixture
+def file_repo_three_versions(
+    file_bindings,
+    file_repository_factory,
+    file_9_contents,
+    monitor_task,
+):
+    """Build a repo with three versions whose diffs span more than one step.
+
+    Using the content units "A" through "E", the versions end up as::
+
+        v1: add A, B, C      -> present {A, B, C}
+        v2: add D, remove A  -> present {B, C, D}
+        v3: add E, remove B  -> present {C, D, E}
+
+    So a diff between the non-adjacent versions v1 and v3 differs from the single-step diff at v3.
+    """
+    repo = file_repository_factory()
+    contents = file_9_contents
+
+    def modify(add=(), remove=()):
+        body = {
+            "add_content_units": [contents[name].pulp_href for name in add],
+            "remove_content_units": [contents[name].pulp_href for name in remove],
+        }
+        monitor_task(file_bindings.RepositoriesFileApi.modify(repo.pulp_href, body).task)
+        return file_bindings.RepositoriesFileApi.read(repo.pulp_href).latest_version_href
+
+    v1 = modify(add=["A", "B", "C"])
+    v2 = modify(add=["D"], remove=["A"])
+    v3 = modify(add=["E"], remove=["B"])
+    return repo, v1, v2, v3
+
+
+def _relative_paths(list_response):
+    return {content.relative_path for content in list_response.results}
+
+
+@pytest.mark.parallel
+def test_repository_version_added_base_version(file_bindings, file_repo_three_versions):
+    """``base_version`` turns ``repository_version_added`` into a net diff between two versions."""
+    _, v1, v2, v3 = file_repo_three_versions
+
+    # Without base_version: single-step diff against the immediate predecessor (v2 -> v3).
+    single_step = file_bindings.ContentFilesApi.list(repository_version_added=v3)
+    assert _relative_paths(single_step) == {"E"}
+
+    # With base_version=v1: net content in v3 but not in v1 => {C, D, E} - {A, B, C}.
+    net = file_bindings.ContentFilesApi.list(repository_version_added=v3, base_version=v1)
+    assert _relative_paths(net) == {"D", "E"}
+
+
+@pytest.mark.parallel
+def test_repository_version_removed_base_version(file_bindings, file_repo_three_versions):
+    """``base_version`` turns ``repository_version_removed`` into a net diff across versions."""
+    _, v1, v2, v3 = file_repo_three_versions
+
+    # Without base_version: single-step diff against the immediate predecessor (v2 -> v3).
+    single_step = file_bindings.ContentFilesApi.list(repository_version_removed=v3)
+    assert _relative_paths(single_step) == {"B"}
+
+    # With base_version=v1: net content in v1 but not in v3 => {A, B, C} - {C, D, E}.
+    net = file_bindings.ContentFilesApi.list(repository_version_removed=v3, base_version=v1)
+    assert _relative_paths(net) == {"A", "B"}
+
+
+@pytest.mark.parallel
+def test_base_version_ignored_without_added_or_removed(file_bindings, file_repo_three_versions):
+    """``base_version`` has no effect unless paired with added/removed filters."""
+    _, v1, v2, v3 = file_repo_three_versions
+
+    present = file_bindings.ContentFilesApi.list(repository_version=v3)
+    present_with_base = file_bindings.ContentFilesApi.list(repository_version=v3, base_version=v1)
+    assert _relative_paths(present_with_base) == _relative_paths(present) == {"C", "D", "E"}
+
+
 @pytest.mark.parallel
 def test_add_remove_repo_version(
     file_bindings,

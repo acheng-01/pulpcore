@@ -144,9 +144,12 @@ class RepoVersionHrefPrnFilter(Filter):
                 detail=_("No value supplied for repository version filter")
             )
 
-        object = NamedModelViewSet.get_resource(value)
+        # content_ids is only consumed as a database-side subquery (see
+        # RepositoryVersion.content_ids_subquery), so defer the potentially huge array column here
+        # to keep it from being loaded into Python when resolving the version.
+        object = NamedModelViewSet.get_resource(value, deferred_fields=("content_ids",))
         if isinstance(object, Repository):
-            object = object.latest_version()
+            object = object.versions.complete().defer("content_ids").last()
         if not isinstance(object, RepositoryVersion):
             raise serializers.ValidationError(
                 detail=_("URI {u} not found for {m}.").format(u=value, m="repositoryversion")
@@ -160,6 +163,53 @@ class RepoVersionHrefPrnFilter(Filter):
             value (string): The RepositoryVersion href/prn to filter by
         """
         raise NotImplementedError()
+
+    def get_base_version(self, field_name="base_version"):
+        """
+        Resolve the companion ``base_version`` filter, if the request supplied one.
+
+        The added/removed filters use this to diff against an *arbitrary* base repository
+        version instead of the filtered version's immediate predecessor.
+
+        Args:
+            field_name (string): The name of the companion base-version filter on the filterset.
+
+        Returns:
+            pulpcore.app.models.RepositoryVersion or None: The resolved base version, or None
+            when no base version was supplied.
+        """
+        if self.parent is None:
+            return None
+        base_value = self.parent.form.cleaned_data.get(field_name)
+        if not base_value:
+            return None
+        return self.get_repository_version(base_value)
+
+
+class RepositoryVersionBaseFilter(RepoVersionHrefPrnFilter):
+    """
+    Companion filter that designates the base repository version for
+    ``repository_version_added`` / ``repository_version_removed`` diffs.
+
+    On its own this filter does not alter the queryset. It is consumed by the added/removed
+    filters to compute the net difference between two arbitrary repository versions, rather than
+    the single-step difference against the filtered version's immediate predecessor.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault(
+            "help_text",
+            _(
+                "Repository Version referenced by HREF/PRN to use as the base for "
+                "repository_version_added / repository_version_removed. When set, added/removed "
+                "content is computed relative to this version instead of the immediate predecessor."
+            ),
+        )
+        super().__init__(*args, **kwargs)
+
+    def filter(self, qs, value):
+        # No-op on its own; the value is consumed by the added/removed filters.
+        return qs
 
 
 class RepositoryVersionFilter(RepoVersionHrefPrnFilter):
@@ -250,7 +300,7 @@ class ContentAddedRepositoryVersionFilter(RepoVersionHrefPrnFilter):
             return qs
 
         repo_version = self.get_repository_version(value)
-        return qs.filter(pk__in=repo_version.added())
+        return qs.filter(pk__in=repo_version.added(base_version=self.get_base_version()))
 
 
 class ContentRemovedRepositoryVersionFilter(RepoVersionHrefPrnFilter):
@@ -272,7 +322,7 @@ class ContentRemovedRepositoryVersionFilter(RepoVersionHrefPrnFilter):
             return qs
 
         repo_version = self.get_repository_version(value)
-        return qs.filter(pk__in=repo_version.removed())
+        return qs.filter(pk__in=repo_version.removed(base_version=self.get_base_version()))
 
 
 class CharInFilter(BaseInFilter, CharFilter):

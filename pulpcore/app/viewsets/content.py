@@ -23,6 +23,7 @@ from .custom_filters import (
     ContentAddedRepositoryVersionFilter,
     ContentRemovedRepositoryVersionFilter,
     ContentRepositoryVersionFilter,
+    RepositoryVersionBaseFilter,
 )
 
 
@@ -125,6 +126,10 @@ class ContentFilter(BaseFilterSet):
             Return Content which was added in this repository version.
         repository_version_removed:
             Return Content which was removed from this repository version.
+        base_version:
+            When combined with repository_version_added / repository_version_removed, compute the
+            net difference relative to this base repository version instead of the filtered
+            version's immediate predecessor. Has no effect on its own.
         orphaned_for:
             Return Content which has been orphaned for a given number of minutes;
             -1 uses ORPHAN_PROTECTION_TIME value.
@@ -135,6 +140,7 @@ class ContentFilter(BaseFilterSet):
     repository_version = ContentRepositoryVersionFilter()
     repository_version_added = ContentAddedRepositoryVersionFilter()
     repository_version_removed = ContentRemovedRepositoryVersionFilter()
+    base_version = RepositoryVersionBaseFilter()
     orphaned_for = OrphanedFilter(
         help_text="Minutes Content has been orphaned for. -1 uses ORPHAN_PROTECTION_TIME."
     )
